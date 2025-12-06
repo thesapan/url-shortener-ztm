@@ -19,7 +19,7 @@
 //! ```bash
 //! APP_APPLICATION__PORT=3000
 //! APP_APPLICATION__API_KEY=your-api-key-here
-//! APP_DATABASE__DATABASE_PATH=./my-database.db
+//! APP_DATABASE__DATABASE_URL=./my-database.db
 //! ```
 //!
 //! ## Example Configuration
@@ -41,6 +41,7 @@ use figment::{
     Figment,
     providers::{Env, Format, Yaml},
 };
+use secrecy::SecretString;
 use serde::Deserialize;
 use serde_aux::field_attributes::deserialize_number_from_string;
 use std::fmt;
@@ -100,10 +101,19 @@ pub struct ApplicationSettings {
     pub port: u16,
     /// Host address for the HTTP server to bind to
     pub host: String,
+    /// Base URL for the application (e.g., "http://localhost:8000")
+    pub base_url: String,
     /// UUID-based API key for authenticating requests to protected endpoints
     pub api_key: Uuid,
+    /// API key for the email service
+    pub email_svc_api_key: Option<SecretString>,
+    /// From address for sending emails
+    pub email_svc_address: Option<String>,
     /// Directory path containing Tera template files
     pub templates: String,
+
+    pub jwt_secret_b64: SecretString,
+    pub pwd_pepper_b64: SecretString,
 }
 
 /// Supported database types.
@@ -123,11 +133,15 @@ pub struct DatabaseSettings {
     /// Type of the database (e.g., SQLite, PostgreSQL)
     pub r#type: DatabaseType,
     /// Path to the SQLite database file (or ":memory:" for in-memory database)
-    #[serde(alias = "database_path")]
+    #[serde(alias = "url")]
     pub url: String,
     /// Whether to create the database file if it doesn't exist
     #[serde(default)]
     pub create_if_missing: bool,
+    #[serde(default)]
+    pub max_connections: Option<u32>,
+    #[serde(default)]
+    pub min_connections: Option<u32>,
 }
 
 // struct type to represent rate limiting settings
@@ -158,6 +172,8 @@ impl DatabaseSettings {
     ///     r#type: DatabaseType::Sqlite,
     ///     url: "database.db".to_string(),
     ///     create_if_missing: true,
+    ///     max_connections: Some(16),
+    ///     min_connections: Some(4),
     /// };
     /// assert_eq!(config.connection_string(), "sqlite:database.db");
     ///
@@ -165,6 +181,8 @@ impl DatabaseSettings {
     ///     r#type: DatabaseType::Sqlite,
     ///     url: ":memory:".to_string(),
     ///     create_if_missing: true,
+    ///     max_connections: Some(16),
+    ///     min_connections: Some(4),
     /// };
     /// assert_eq!(memory_config.connection_string(), "sqlite::memory:");
     /// ```
@@ -262,7 +280,7 @@ impl TryFrom<String> for Environment {
 /// Any configuration value can be overridden using environment variables:
 /// - `APP_APPLICATION__PORT=3000`
 /// - `APP_APPLICATION__API_KEY=your-key-here`
-/// - `APP_DATABASE__DATABASE_PATH=./my-db.db`
+/// - `APP_DATABASE__DATABASE_URL=./my-db.db`
 ///
 /// # Returns
 ///

@@ -1,55 +1,99 @@
-{% extends "base.html" %}
+{% extends "base_admin.html" %}
+{% set title = "Dashboard" %}
+
+{% block page_header %}
+<header class="admin-header">
+    <div></div> <!-- Empty div for spacing -->
+    <button class="hamburger-button" id="hamburger-button" aria-label="Toggle menu">☰</button>
+</header>
+{% endblock page_header %}
 
 {% block content %}
-<div class="container">
-  <div class="hero">
-    <h2>Admin Dashboard</h2>
-    <p>{{ message }}</p>
-  </div>
-  
-  <div class="admin-panel">
-    <div class="admin-nav">
-      <h3>Admin Navigation</h3>
-      <ul>
-        <li><a href="/admin/profile">User Profile</a></li>
-        <li><a href="/admin/users">Manage Users</a></li>
-        <li><a href="/admin/urls">Manage URLs</a></li>
-        <li><a href="/admin/analytics">Analytics</a></li>
-      </ul>
+
+<!-- Welcome Header - Contains the main dashboard greeting and CTA -->
+<div class="welcome-header">
+    <div>
+        <h2>Welcome Back, Admin!</h2>
+        <p>Here's a snapshot of your link activity.</p>
     </div>
-    
-    <div class="admin-content">
-      <div class="stats-grid">
-        <div class="stat-card">
-          <h4>Total URLs</h4>
-          <p class="stat-number">0</p>
-        </div>
-        <div class="stat-card">
-          <h4>Total Users</h4>
-          <p class="stat-number">0</p>
-        </div>
-        <div class="stat-card">
-          <h4>Total Clicks</h4>
-          <p class="stat-number">0</p>
-        </div>
-        <div class="stat-card">
-          <h4>Active Today</h4>
-          <p class="stat-number">0</p>
-        </div>
-      </div>
-      
-      <div class="recent-activity">
-        <h3>Recent Activity</h3>
-        <div class="activity-list">
-          <p>No recent activity to display.</p>
-        </div>
-      </div>
-    </div>
-  </div>
-  
-  <div class="admin-actions">
-    <a href="/" class="btn secondary">Back to Home</a>
-    <a href="/admin/logout" class="btn primary">Logout</a>
-  </div>
+    <a href="/" class="btn btn-primary">Create New Link</a>
 </div>
+
+<!-- Stats Grid - Displays key metrics for the admin dashboard -->
+<div class="stats-grid">
+    <div class="card stat-card">
+        <div class="stat-card-icon">🔗</div>
+        <div class="stat-card-info">
+            <h3>Total Links</h3>
+            <p class="stat-number">1,234</p>
+        </div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-card-icon">🖱️</div>
+        <div class="stat-card-info">
+            <h3>Total Clicks</h3>
+            <p class="stat-number">56,789</p>
+        </div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-card-icon">📈</div>
+        <div class="stat-card-info">
+            <h3>Top Performing Link</h3>
+            <p class="stat-number" style="font-size: 1.5rem;">/ztm-rust</p>
+        </div>
+    </div>
+    <div class="card stat-card">
+        <div class="stat-card-icon">🌍</div>
+        <div class="stat-card-info">
+            <h3>Top Country</h3>
+            <p class="stat-number">USA</p>
+        </div>
+    </div>
+</div>
+
+<!-- Analytics Chart - Shows click activity over time -->
+<h2 class="section-header">Recent Activity</h2>
+<div class="card">
+    <canvas id="dashboardClicksChart"></canvas>
+</div>
+
+<!-- Recent Links Table - Displays recently created or active links -->
+<h2 class="section-header">Recent Links</h2>
+<div class="data-table-container">
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Short Code</th>
+                <th>Original URL</th>
+                <th>Clicks</th>
+                <th>Created</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><a href="/AbC123" class="short-code">AbC123</a></td>
+                <td class="url-cell"><a href="https://github.com/zero-to-mastery/url-shortener-ztm" target="_blank"
+                        rel="noopener">https://github.com/zero-to-mastery/url-shortener-ztm</a></td>
+                <td>1,204</td>
+                <td>2 hours ago</td>
+            </tr>
+            <tr>
+                <td><a href="/XyZ789" class="short-code">XyZ789</a></td>
+                <td class="url-cell"><a href="https://zerotomastery.io/courses/rust/" target="_blank"
+                        rel="noopener">https://zerotomastery.io/courses/rust/</a></td>
+                <td>876</td>
+                <td>1 day ago</td>
+            </tr>
+            <tr>
+                <td><a href="/RustDev" class="short-code">RustDev</a></td>
+                <td class="url-cell"><a href="https://www.udemy.com/course/complete-rust-developer-zero-to-mastery/"
+                        target="_blank"
+                        rel="noopener">https://www.udemy.com/course/complete-rust-developer-zero-to-mastery/</a></td>
+                <td>512</td>
+                <td>3 days ago</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
 {% endblock content %}

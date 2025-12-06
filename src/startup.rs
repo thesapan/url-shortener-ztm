@@ -48,22 +48,33 @@
 //! ```
 
 use crate::configuration::Settings;
+use crate::core::security::jwt::JwtKeys;
 use crate::database::postgres_sql::PostgresUrlDatabase;
 use crate::database::{SqliteUrlDatabase, UrlDatabase};
-use crate::generator::build_generator;
+use crate::features::auth::repositories::NoopAuthRepo;
+use crate::features::auth::routes as auth;
+use crate::features::auth::services::AuthService;
+use crate::features::users;
+use crate::features::users::repositories::NoopUserRepo;
+use crate::features::users::services::UserService;
+use crate::generator::{DEFAULT_ALPHABET, build_generator};
+use crate::infrastructure::db::{self};
+use crate::infrastructure::email::EmailService;
 use crate::middleware::check_api_key;
 use crate::routes::{
-    get_admin_dashboard, get_current_user, get_index, get_login, get_redirect, get_register,
-    get_tags, get_user_profile, health_check, post_shorten, post_users_login, post_users_register,
-    serve_openapi_spec, serve_swagger_ui,
+    get_admin_dashboard, get_analytics, get_index, get_login, get_redirect, get_register, get_urls,
+    get_user_profile, get_users, health_check, post_shorten, serve_openapi_spec, serve_swagger_ui,
 };
+use axum::middleware::from_fn;
+use secrecy::ExposeSecret;
+use tokio::time::Duration as TokioDuration;
 
 use crate::shortcode::bloom_filter::{
-    L2S_SNAPSHOT, S2L_SNAPSHOT, build_bloom_pair, not_disable_bf_snapshots,
+    S2L_SNAPSHOT_KEY, build_bloom_state, not_disable_bf_snapshots,
 };
 use crate::state::AppState;
 use crate::telemetry::MakeRequestUuid;
-use crate::{DatabaseType, generator};
+use crate::{DatabaseType, capture_client_meta};
 use anyhow::{Context, Result};
 use axum::http::{Request, Response};
 use axum::{
@@ -74,8 +85,8 @@ use axum::{
 };
 use std::collections::HashSet;
 
+use chrono::Duration;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tower::ServiceBuilder;
@@ -180,7 +191,7 @@ pub struct Application {
     /// TCP listener for incoming connections
     listener: TcpListener,
     /// Axum router with all configured routes and middleware
-    router: Router,
+    router: Router<AppState>,
     /// Application state shared across all handlers
     state: AppState,
 }
@@ -223,52 +234,51 @@ impl Application {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn build(config: Settings) -> Result<Self, anyhow::Error> {
-        // set up the database connection pool and run migrations
-        let database: Arc<dyn UrlDatabase> = match config.database.r#type {
+    pub async fn build(cfg: Settings) -> Result<Self, anyhow::Error> {
+        let url_db: Arc<dyn UrlDatabase> = match cfg.database.r#type {
             DatabaseType::Sqlite => {
-                let db = SqliteUrlDatabase::from_config(&config.database).await?;
+                let db = SqliteUrlDatabase::from_config(&cfg.database).await?;
                 db.migrate().await?;
                 Arc::new(db) as Arc<dyn UrlDatabase>
             }
             DatabaseType::Postgres => {
-                let db = PostgresUrlDatabase::from_config(&config.database).await?;
+                let db = PostgresUrlDatabase::from_config(&cfg.database).await?;
                 db.migrate().await?;
                 Arc::new(db) as Arc<dyn UrlDatabase>
             }
         };
-        let code_generator = build_generator(&config.shortener);
 
-        let allowed_chars: HashSet<char> = {
-            let mut set: HashSet<char> = HashSet::new();
-            if let Some(alpha) = &config.shortener.alphabet {
-                set.extend(alpha.chars());
-            } else {
-                set.extend(generator::DEFAULT_ALPHABET);
-            }
+        let code_gen = build_generator(&cfg.shortener);
+        let allowed_chars = build_allowed_chars(cfg.shortener.alphabet.as_deref());
 
-            set
-        };
+        let blooms: crate::shortcode::bloom_filter::BloomState = build_bloom_state(&url_db).await?;
+        let jwt = JwtKeys::new(cfg.application.jwt_secret_b64.expose_secret().as_bytes());
 
-        let blooms = build_bloom_pair(&database).await.unwrap();
+        let (auth_svc, user_svc) = build_services(&cfg, &jwt).await?;
 
         // Set up the TCP listener and application state
-        let api_key = config.application.api_key;
-        let template_dir = config.application.templates.clone();
-        let address = format!("{}:{}", config.application.host, config.application.port);
+        let address = format!("{}:{}", cfg.application.host, cfg.application.port);
         let listener = TcpListener::bind(address)
             .await
             .context("Unable to obtain a TCP listener...")?;
         let port = listener.local_addr()?.port();
-        let state = AppState::new(
-            database,
-            code_generator,
+
+        let state = AppState {
+            // db_pool: Arc::new(db_pool),
+            code_generator: code_gen,
             blooms,
             allowed_chars,
-            api_key,
-            template_dir,
-            config,
-        );
+            api_key: cfg.application.api_key,
+            template_dir: cfg.application.templates.clone(),
+            config: cfg.clone(),
+            auth_service: auth_svc,
+            user_service: user_svc,
+            jwt,
+            database: url_db,
+        };
+
+        // Template initialization
+        crate::templates::build_templates(state.clone()).expect("Failed to build templates");
 
         // Build the application router, passing in the application state
         let router = build_router(state.clone())
@@ -276,19 +286,28 @@ impl Application {
             .context("Failed to create the application router.")?;
 
         let blooms = state.blooms.clone();
+        let bloom_db = state.database.clone();
 
         if not_disable_bf_snapshots() {
             tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(Duration::from_secs(60 * 5)); // 5min
+                let mut ticker = tokio::time::interval(Duration::minutes(5).to_std().unwrap());
                 loop {
                     ticker.tick().await;
-                    if let Err(err) = blooms.s2l.save_to_file_with_hashes(S2L_SNAPSHOT) {
+                    let snapshot = match blooms.s2l.snapshot() {
+                        Ok(bytes) => bytes,
+                        Err(err) => {
+                            tracing::warn!(error = %err, "unable to serialize s2l Bloom snapshot");
+                            continue;
+                        }
+                    };
+                    if let Err(err) = bloom_db
+                        .save_bloom_snapshot(S2L_SNAPSHOT_KEY, &snapshot)
+                        .await
+                    {
                         tracing::warn!(error = %err, "failed to persist s2l Bloom snapshot");
+                        continue;
                     }
-                    if let Err(err) = blooms.l2s.save_to_file_with_hashes(L2S_SNAPSHOT) {
-                        tracing::warn!(error = %err, "failed to persist l2s Bloom snapshot");
-                    }
-                    tracing::info!("Bloom snapshots saved.");
+                    tracing::info!("Bloom snapshot saved to database.");
                 }
             });
         }
@@ -358,14 +377,44 @@ impl Application {
     /// # }
     /// ```
     pub async fn run_until_stopped(self) -> Result<(), anyhow::Error> {
+        let blooms = self.state.blooms.clone();
+        let bloom_db = self.state.database.clone();
+
         axum::serve(
             self.listener,
             self.router
+                .with_state(self.state.clone())
                 .into_make_service_with_connect_info::<std::net::SocketAddr>(),
         )
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+
+            if not_disable_bf_snapshots() {
+                match blooms.s2l.snapshot() {
+                    Ok(bytes) => {
+                        if let Err(err) =
+                            bloom_db.save_bloom_snapshot(S2L_SNAPSHOT_KEY, &bytes).await
+                        {
+                            tracing::warn!(
+                                %err,
+                                "failed to persist s2l Bloom snapshot on shutdown"
+                            );
+                        } else {
+                            tracing::info!("Bloom snapshot saved on shutdown.");
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            %err,
+                            "unable to serialize s2l Bloom snapshot on shutdown"
+                        );
+                    }
+                }
+            }
+        })
         .await
         .context("Unable to start the app server...")?;
+
         Ok(())
     }
 }
@@ -416,6 +465,8 @@ impl Application {
 ///     r#type: DatabaseType::Sqlite,
 ///     url: "database.db".to_string(),
 ///     create_if_missing: true,
+///     max_connections: Some(16),
+///     min_connections: Some(4),
 /// };
 /// let database = Arc::new(SqliteUrlDatabase::from_config(&config).await?);
 /// let api_key = Uuid::new_v4();
@@ -426,8 +477,9 @@ impl Application {
 /// # Ok(())
 /// # }
 /// ```
-pub async fn build_router(state: AppState) -> Result<Router, anyhow::Error> {
+pub async fn build_router(state: AppState) -> Result<Router<AppState>, anyhow::Error> {
     // Define the tracing layer for request/response logging
+    crate::templates::build_templates(state.clone()).context("Failed to build templates")?;
     let trace_layer = TraceLayer::new_for_http()
         .make_span_with(|req: &Request<_>| {
             let ua = req
@@ -449,7 +501,7 @@ pub async fn build_router(state: AppState) -> Result<Router, anyhow::Error> {
                 req.headers()
             );
         })
-        .on_response(|res: &Response<_>, latency: Duration, _span: &Span| {
+        .on_response(|res: &Response<_>, latency: TokioDuration, _span: &Span| {
             tracing::info!(
                 "\nresponse:\n  status: {}\n  elapsed_ms: {}\n  headers:\n{:#?}",
                 res.status(),
@@ -471,7 +523,7 @@ pub async fn build_router(state: AppState) -> Result<Router, anyhow::Error> {
 
         // Start background cleanup task
         let governor_limiter = governor_conf.limiter().clone();
-        let interval = Duration::from_secs(60);
+        let interval = TokioDuration::from_secs(60);
         tokio::spawn(async move {
             let mut cleanup_interval = tokio::time::interval(interval);
             loop {
@@ -518,23 +570,17 @@ pub async fn build_router(state: AppState) -> Result<Router, anyhow::Error> {
         .route("/admin/profile", get(get_user_profile))
         .route("/admin/login", get(get_login))
         .route("/admin/register", get(get_register))
-        .route_layer(from_fn_with_state(state.clone(), check_api_key));
-
-    // RealWorld API routes (public for now; auth to be added later)
-    let realworld_routes = Router::new()
-        .route("/api/tags", get(get_tags))
-        .route("/api/users", post(post_users_register))
-        .route("/api/users/login", post(post_users_login))
-        .route("/api/user", get(get_current_user));
+        .route("/admin/users", get(get_users))
+        .route("/admin/urls", get(get_urls))
+        .route("/admin/analytics", get(get_analytics));
+    // TODO: Add session-based auth middleware once implemented
 
     // Merge all routes together
-    let router = Router::new()
+    let mut router = Router::new()
         .merge(public_routes)
         .merge(public_shorten)
         .merge(protected_api)
         .merge(protected_admin)
-        .merge(realworld_routes)
-        .with_state(state)
         .layer(
             ServiceBuilder::new()
                 .layer(SetRequestIdLayer::new(
@@ -545,5 +591,69 @@ pub async fn build_router(state: AppState) -> Result<Router, anyhow::Error> {
                 .layer(PropagateRequestIdLayer::new(x_request_id)),
         );
 
+    if matches!(state.config.database.r#type, DatabaseType::Postgres) {
+        router = router
+            .nest("/api/v1/auth", auth::router())
+            .nest("/api/v1/user", users::router())
+            .layer(from_fn(capture_client_meta));
+    }
+
     Ok(router)
+}
+
+pub fn build_allowed_chars(alphabet: Option<&str>) -> HashSet<char> {
+    let mut set = HashSet::new();
+    if let Some(alpha) = alphabet {
+        set.extend(alpha.chars());
+    } else {
+        set.extend(DEFAULT_ALPHABET.iter().copied());
+    }
+
+    set
+}
+
+pub async fn build_services(
+    cfg: &Settings,
+    jwt: &JwtKeys,
+) -> Result<(Arc<AuthService>, Arc<UserService>), anyhow::Error> {
+    let email_service = EmailService::new(
+        cfg.application
+            .email_svc_api_key
+            .as_ref()
+            .map(|s| s.expose_secret())
+            .unwrap_or(""),
+        cfg.application
+            .email_svc_address
+            .as_deref()
+            .unwrap_or_default(),
+    );
+
+    let (auth_svc, user_svc) = if matches!(cfg.database.r#type, DatabaseType::Postgres) {
+        let db_pool = db::make_pools(&cfg.database).await?;
+        let repos = db::make_repos(&db_pool).await;
+        (
+            Arc::new(AuthService::new(
+                repos.users.clone(),
+                repos.auth.clone(),
+                jwt.clone(),
+                chrono::Duration::minutes(15),
+                cfg.application.pwd_pepper_b64.clone(),
+                email_service,
+            )),
+            Arc::new(UserService::new(repos.users.clone())),
+        )
+    } else {
+        (
+            Arc::new(AuthService::new(
+                Arc::new(NoopUserRepo),
+                Arc::new(NoopAuthRepo),
+                jwt.clone(),
+                chrono::Duration::minutes(15),
+                cfg.application.pwd_pepper_b64.clone(),
+                email_service,
+            )),
+            Arc::new(UserService::new(Arc::new(NoopUserRepo))),
+        )
+    };
+    Ok((auth_svc, user_svc))
 }

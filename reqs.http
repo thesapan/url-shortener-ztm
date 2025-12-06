@@ -1,0 +1,108 @@
+@base = http://localhost:8000
+@device_id = some-unique-device-id
+@email = example@example.com
+@password = 安全パスワード!2024Strong
+
+### Sign up
+POST {{base}}/api/v1/auth/sign-up
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "{{password}}",
+  "device_id": "{{device_id}}"
+}
+
+### Sign in
+POST {{base}}/api/v1/auth/sign-in
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "password": "{{password}}",
+  "device_id": "{{device_id}}"
+}
+
+### Refresh tokens
+POST {{base}}/api/v1/auth/refresh
+Content-Type: application/json
+
+{
+  "device_id": "{{device_id}}"
+}
+
+### Sign out
+POST {{base}}/api/v1/auth/sign-out
+Content-Type: application/json
+
+{
+  "device_id": "{{device_id}}"
+}
+
+### Sign out all
+POST {{base}}/api/v1/auth/sign-out-all
+Content-Type: application/json
+
+{
+  "device_id": "{{device_id}}"
+}
+
+### Change password
+POST {{base}}/api/v1/auth/change-password
+Content-Type: application/json
+
+{
+  "old_password": "{{password}}",
+  "new_password": "012345678911"
+}
+
+### Request password reset
+POST {{base}}/api/v1/auth/password-reset/request
+Content-Type: application/json
+
+{
+  "email": "{{email}}"
+}
+
+### Confirm password reset
+POST {{base}}/api/v1/auth/password-reset/confirm
+Content-Type: application/json
+
+{
+  "email": "{{email}}",
+  "code": "xxxxxxxx",
+  "new_password": "安全パスワード!2024Strong11"
+}
+
+### Request email verification
+GET {{base}}/api/v1/auth/verify-email/request
+
+### Confirm email verification
+POST {{base}}/api/v1/auth/verify-email/confirm
+Content-Type: application/json
+
+{
+  "code": "xxxxxxxx"
+}
+
+### Request Change email 
+POST {{base}}/api/v1/auth/change-email/request
+Content-Type: application/json
+
+{
+  "current_password": "012345678911",
+  "new_email": "wanikac200@gyknife.com"
+}
+
+### Confirm Change email 
+
+POST {{base}}/api/v1/auth/change-email/confirm
+Content-Type: application/json
+
+{
+  "code": "xxxxxxxx"
+}
+
+
+### Get current user
+GET {{base}}/api/v1/user/me

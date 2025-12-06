@@ -1,12 +1,30 @@
 application:
   port: 8000
   host: 0.0.0.0
+  base_url: "http://localhost:8000"
+  # WARNING: This is a development-only API key. It is intentionally predictable
+  # and must NEVER be used in production. The application will emit a runtime
+  # warning if this default key is detected.
+  #
+  # To set a secure key:
+  # - Prefer environment variables in all non-local environments
+  #   APP_APPLICATION__API_KEY=<uuid-v4>
+  # - Generate a UUID v4 (examples):
+  #   - Linux/macOS: uuidgen
+  #   - PowerShell: [guid]::NewGuid()
+  #   - Rust (one-off): cargo run --bin print-uuid (see README)
+  #
+  # Note: Keeping this default ensures `cargo run` works out of the box locally.
   api_key: "e4125dd1-3d3e-43a1-bc9c-dc0ba12ad4b5"
+  jwt_secret_b64: "AO1Es8YQ0wYwNUjHGH8Fz4undyFD/HcWHkx6Dfzyfgc="
+  pwd_pepper_b64: "3Dy73jOzO6/XcLyBXpPlXK53rLXg6DqWPyftLox2VYY="
   templates: "templates/**/*"
 database:
   type: sqlite
-  database_path: sqlite:database.db
+  url: sqlite:database.db
   create_if_missing: true
+  # max_connections: 64 # set database pool connecttion
+  # min_connections: 16
 rate_limiting:
   enabled: true
   requests_per_second: 10

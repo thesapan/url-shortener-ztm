@@ -38,6 +38,8 @@
 //!     r#type: DatabaseType::Sqlite,
 //!     url: "database.db".to_string(),
 //!     create_if_missing: true,
+//!     max_connections: Some(16),
+//!     min_connections: Some(4),
 //! };
 //! let database = Arc::new(SqliteUrlDatabase::from_config(&config).await?);
 //! let api_key = Uuid::new_v4();
@@ -134,6 +136,8 @@ fn load_templates(template_dir: String) -> Result<Tera, Error> {
 ///     r#type: DatabaseType::Sqlite,
 ///     url: "database.db".to_string(),
 ///     create_if_missing: true,
+///     max_connections: Some(16),
+///     min_connections: Some(4),
 /// };
 /// let database = Arc::new(SqliteUrlDatabase::from_config(&config).await?);
 /// let api_key = Uuid::new_v4();
@@ -151,4 +155,12 @@ pub fn build_templates(state: AppState) -> Result<&'static Tera, Error> {
     let dir = state.template_dir;
     let templates = load_templates(dir)?;
     Ok(COMPILED_TEMPLATES.get_or_init(|| templates))
+}
+
+/// Returns a reference to the globally cached Tera instance.
+/// Panics if templates have not been initialized by calling `build_templates` first.
+pub fn get_templates() -> &'static Tera {
+    COMPILED_TEMPLATES
+        .get()
+        .expect("Templates have not been initialized")
 }
